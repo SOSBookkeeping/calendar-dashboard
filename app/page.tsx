@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Briefcase,
   CalendarDays,
@@ -33,20 +33,40 @@ type CalendarItem = {
   kind: "event" | "task";
   title: string;
   source: string;
-  date: string; // YYYY-MM-DD
+  date: string;
   time: string;
   category: string;
   done?: boolean;
 };
 
-const sampleClients = [
+type Client = {
+  id: number;
+  name: string;
+  service: string;
+  nextAction: string;
+  status: string;
+};
+
+type WorkflowItem = {
+  id: number;
+  name: string;
+  stage: string;
+  owner: string;
+};
+
+const STORAGE_KEYS = {
+  items: "sos-dashboard-items",
+  clients: "sos-dashboard-clients",
+};
+
+const defaultClients: Client[] = [
   { id: 1, name: "Acorn Retail Ltd", service: "Bookkeeping", nextAction: "Send VAT summary", status: "Active" },
   { id: 2, name: "Northfield Fitness", service: "Payroll", nextAction: "Approve payroll run", status: "Waiting" },
   { id: 3, name: "Mason Electrical", service: "Year End", nextAction: "Request missing invoices", status: "Urgent" },
   { id: 4, name: "Willow Cafe", service: "Monthly accounts", nextAction: "Bank reconciliation", status: "Active" },
 ];
 
-const sampleWorkflows = [
+const sampleWorkflows: WorkflowItem[] = [
   { id: 1, name: "Client onboarding", stage: "Docs pending", owner: "Shane" },
   { id: 2, name: "VAT return cycle", stage: "Review", owner: "SOS Team" },
   { id: 3, name: "Payroll processing", stage: "Awaiting approval", owner: "Admin" },
@@ -66,7 +86,7 @@ function sameDay(a: Date, b: Date) {
 
 function startOfWeekMonday(date: Date) {
   const copy = new Date(date);
-  const day = copy.getDay(); // 0 Sun, 1 Mon
+  const day = copy.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   copy.setDate(copy.getDate() + diff);
   copy.setHours(0, 0, 0, 0);
@@ -100,9 +120,7 @@ function SidebarItem({
   return (
     <button
       className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left transition ${
-        active
-          ? "bg-white text-slate-950 shadow-sm"
-          : "text-slate-300 hover:bg-slate-800 hover:text-white"
+        active ? "bg-white text-slate-950 shadow-sm" : "text-slate-300 hover:bg-slate-800 hover:text-white"
       }`}
     >
       <span>{icon}</span>
@@ -128,9 +146,7 @@ function WeekDayCard({
     <button
       onClick={onClick}
       className={`rounded-2xl border p-4 text-left transition ${
-        selected
-          ? "border-blue-400 bg-blue-500/15"
-          : "border-slate-700 bg-slate-900 hover:bg-slate-800"
+        selected ? "border-blue-400 bg-blue-500/15" : "border-slate-700 bg-slate-900 hover:bg-slate-800"
       }`}
     >
       <div className="flex items-start justify-between gap-2">
@@ -141,12 +157,14 @@ function WeekDayCard({
           <p className="mt-1 text-2xl font-bold text-white">{date.getDate()}</p>
         </div>
         {isToday && (
-          <Badge className="rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+          <Badge className="rounded-full border border-emerald-400/30 bg-emerald-500/20 text-emerald-300">
             Today
           </Badge>
         )}
       </div>
-      <p className="mt-3 text-sm text-slate-400">{count} item{count === 1 ? "" : "s"}</p>
+      <p className="mt-3 text-sm text-slate-400">
+        {count} item{count === 1 ? "" : "s"}
+      </p>
     </button>
   );
 }
@@ -219,71 +237,106 @@ export default function SOSDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [weekStart, setWeekStart] = useState(startOfWeekMonday(today));
   const [selectedDate, setSelectedDate] = useState(todayKey);
-  const [items, setItems] = useState<CalendarItem[]>([
-    {
-      id: 1,
-      kind: "event",
-      title: "Team Standup",
-      source: "Google Calendar",
-      date: todayKey,
-      time: "09:00 - 09:30",
-      category: "Work",
-    },
-    {
-      id: 2,
-      kind: "task",
-      title: "Submit quarterly report",
-      source: "Microsoft To Do",
-      date: todayKey,
-      time: "Due 14:00",
-      category: "Priority",
-      done: false,
-    },
-    {
-      id: 3,
-      kind: "event",
-      title: "Client call - Acorn Retail Ltd",
-      source: "Outlook",
-      date: todayKey,
-      time: "11:30 - 12:00",
-      category: "Client",
-    },
-    {
-      id: 4,
-      kind: "task",
-      title: "Bank reconciliation",
-      source: "Dashboard",
-      date: formatDateKey(addDays(today, 1)),
-      time: "Due 13:00",
-      category: "Accounts",
-      done: false,
-    },
-    {
-      id: 5,
-      kind: "event",
-      title: "VAT review meeting",
-      source: "Google Calendar",
-      date: formatDateKey(addDays(today, 2)),
-      time: "15:00 - 16:00",
-      category: "VAT",
-    },
-    {
-      id: 6,
-      kind: "task",
-      title: "Request missing invoices",
-      source: "Dashboard",
-      date: formatDateKey(addDays(today, 4)),
-      time: "Due anytime",
-      category: "Urgent",
-      done: false,
-    },
-  ]);
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  const [items, setItems] = useState<CalendarItem[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
 
   const [newTitle, setNewTitle] = useState("");
   const [newTime, setNewTime] = useState("");
   const [newCategory, setNewCategory] = useState("");
   const [newSource, setNewSource] = useState("");
   const [newKind, setNewKind] = useState<"event" | "task">("event");
+
+  const [newClientName, setNewClientName] = useState("");
+  const [newClientService, setNewClientService] = useState("");
+  const [newClientAction, setNewClientAction] = useState("");
+  const [newClientStatus, setNewClientStatus] = useState("");
+
+  useEffect(() => {
+    const defaultItems: CalendarItem[] = [
+      {
+        id: 1,
+        kind: "event",
+        title: "Team Standup",
+        source: "Google Calendar",
+        date: todayKey,
+        time: "09:00 - 09:30",
+        category: "Work",
+      },
+      {
+        id: 2,
+        kind: "task",
+        title: "Submit quarterly report",
+        source: "Microsoft To Do",
+        date: todayKey,
+        time: "Due 14:00",
+        category: "Priority",
+        done: false,
+      },
+      {
+        id: 3,
+        kind: "event",
+        title: "Client call - Acorn Retail Ltd",
+        source: "Outlook",
+        date: todayKey,
+        time: "11:30 - 12:00",
+        category: "Client",
+      },
+      {
+        id: 4,
+        kind: "task",
+        title: "Bank reconciliation",
+        source: "Dashboard",
+        date: formatDateKey(addDays(today, 1)),
+        time: "Due 13:00",
+        category: "Accounts",
+        done: false,
+      },
+      {
+        id: 5,
+        kind: "event",
+        title: "VAT review meeting",
+        source: "Google Calendar",
+        date: formatDateKey(addDays(today, 2)),
+        time: "15:00 - 16:00",
+        category: "VAT",
+      },
+      {
+        id: 6,
+        kind: "task",
+        title: "Request missing invoices",
+        source: "Dashboard",
+        date: formatDateKey(addDays(today, 4)),
+        time: "Due anytime",
+        category: "Urgent",
+        done: false,
+      },
+    ];
+
+    try {
+      const storedItems = localStorage.getItem(STORAGE_KEYS.items);
+      const storedClients = localStorage.getItem(STORAGE_KEYS.clients);
+
+      setItems(storedItems ? JSON.parse(storedItems) : defaultItems);
+      setClients(storedClients ? JSON.parse(storedClients) : defaultClients);
+    } catch {
+      setItems(defaultItems);
+      setClients(defaultClients);
+    } finally {
+      setHasLoaded(true);
+    }
+  }, [todayKey]);
+
+  useEffect(() => {
+    if (!hasLoaded) return;
+    localStorage.setItem(STORAGE_KEYS.items, JSON.stringify(items));
+  }, [items, hasLoaded]);
+
+  useEffect(() => {
+    if (!hasLoaded) return;
+    localStorage.setItem(STORAGE_KEYS.clients, JSON.stringify(clients));
+  }, [clients, hasLoaded]);
 
   const weekDays = useMemo(() => {
     return Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
@@ -324,16 +377,36 @@ export default function SOSDashboard() {
     setNewKind("event");
   };
 
+  const addClient = () => {
+    if (!newClientName.trim()) return;
+
+    const client: Client = {
+      id: Date.now(),
+      name: newClientName.trim(),
+      service: newClientService.trim() || "Bookkeeping",
+      nextAction: newClientAction.trim() || "Follow up required",
+      status: newClientStatus.trim() || "Active",
+    };
+
+    setClients((current) => [client, ...current]);
+    setNewClientName("");
+    setNewClientService("");
+    setNewClientAction("");
+    setNewClientStatus("");
+  };
+
   const toggleTask = (id: number) => {
     setItems((current) =>
-      current.map((item) =>
-        item.id === id ? { ...item, done: !item.done } : item
-      )
+      current.map((item) => (item.id === id ? { ...item, done: !item.done } : item))
     );
   };
 
   const deleteItem = (id: number) => {
     setItems((current) => current.filter((item) => item.id !== id));
+  };
+
+  const deleteClient = (id: number) => {
+    setClients((current) => current.filter((client) => client.id !== id));
   };
 
   const selectedDateObj = new Date(`${selectedDate}T12:00:00`);
@@ -381,7 +454,7 @@ export default function SOSDashboard() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Clients</span>
-                  <strong>{sampleClients.length}</strong>
+                  <strong>{clients.length}</strong>
                 </div>
               </div>
             </div>
@@ -412,7 +485,7 @@ export default function SOSDashboard() {
                       SOS Bookkeeping Dashboard
                     </h1>
                     <p className="mt-2 text-slate-200">
-                      Weekly calendar view with clickable days and a live agenda below.
+                      Weekly calendar with saved clients and saved tasks/events.
                     </p>
                   </div>
                 </div>
@@ -455,7 +528,7 @@ export default function SOSDashboard() {
               <Card className="rounded-2xl border-slate-700 bg-slate-900 shadow-sm">
                 <CardHeader className="pb-2">
                   <CardDescription className="text-slate-300">Clients</CardDescription>
-                  <CardTitle className="text-4xl">{sampleClients.length}</CardTitle>
+                  <CardTitle className="text-4xl">{clients.length}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
@@ -465,9 +538,7 @@ export default function SOSDashboard() {
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <CardTitle className="text-2xl text-white">Weekly Calendar</CardTitle>
-                    <CardDescription className="text-slate-300">
-                      Monday to Sunday
-                    </CardDescription>
+                    <CardDescription className="text-slate-300">Monday to Sunday</CardDescription>
                   </div>
 
                   <div className="flex gap-2">
@@ -614,14 +685,54 @@ export default function SOSDashboard() {
 
                 <Card className="rounded-2xl border-slate-700 bg-slate-900 shadow-sm">
                   <CardHeader>
-                    <CardTitle className="text-xl text-white">Clients</CardTitle>
+                    <CardTitle className="text-xl text-white">Add Client</CardTitle>
                     <CardDescription className="text-slate-300">
-                      Next actions by client.
+                      Save a client to this dashboard.
                     </CardDescription>
                   </CardHeader>
 
                   <CardContent className="space-y-3">
-                    {sampleClients.map((client) => (
+                    <Input
+                      value={newClientName}
+                      onChange={(e) => setNewClientName(e.target.value)}
+                      placeholder="Client name"
+                      className="rounded-2xl border-slate-600 bg-slate-800 text-white"
+                    />
+                    <Input
+                      value={newClientService}
+                      onChange={(e) => setNewClientService(e.target.value)}
+                      placeholder="Service"
+                      className="rounded-2xl border-slate-600 bg-slate-800 text-white"
+                    />
+                    <Input
+                      value={newClientAction}
+                      onChange={(e) => setNewClientAction(e.target.value)}
+                      placeholder="Next action"
+                      className="rounded-2xl border-slate-600 bg-slate-800 text-white"
+                    />
+                    <Input
+                      value={newClientStatus}
+                      onChange={(e) => setNewClientStatus(e.target.value)}
+                      placeholder="Status"
+                      className="rounded-2xl border-slate-600 bg-slate-800 text-white"
+                    />
+
+                    <Button onClick={addClient} className="w-full rounded-2xl">
+                      <Plus className="mr-2 h-4 w-4" /> Add Client
+                    </Button>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-2xl border-slate-700 bg-slate-900 shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="text-xl text-white">Clients</CardTitle>
+                    <CardDescription className="text-slate-300">
+                      Saved locally in this browser.
+                    </CardDescription>
+                  </CardHeader>
+
+                  <CardContent className="space-y-3">
+                    {clients.map((client) => (
                       <div key={client.id} className="rounded-2xl bg-slate-800 p-4 text-slate-100">
                         <div className="flex items-start justify-between gap-3">
                           <div>
@@ -629,9 +740,19 @@ export default function SOSDashboard() {
                             <p className="mt-1 text-sm opacity-80">{client.service}</p>
                             <p className="mt-2 text-sm">{client.nextAction}</p>
                           </div>
-                          <Badge variant="outline" className="rounded-full border-slate-500 text-slate-100">
-                            {client.status}
-                          </Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="rounded-full border-slate-500 text-slate-100">
+                              {client.status}
+                            </Badge>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="rounded-2xl border-slate-600 bg-slate-900 text-slate-100 hover:bg-slate-800"
+                              onClick={() => deleteClient(client.id)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     ))}
